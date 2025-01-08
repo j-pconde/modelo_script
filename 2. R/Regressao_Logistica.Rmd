@@ -1,0 +1,167 @@
+```{r}
+#Bibliotecas necessarias
+#install.packages('pROC')
+#install.packages('ResourceSelection')
+
+library('pROC')
+library('ResourceSelection')
+library('dplyr')
+```
+
+```{r}
+#carregando base .RData
+
+load("C:/Users/jonathan.perez/Documents/2. ESTUDOS/3. DADOS/livro - metodos multivariados de analise estatistica/Outros Dados/Capítulo 10/SR.RData")
+
+SR
+```
+
+### Separando base de treino e teste
+
+```{r}
+set.seed(336699)
+indices <- sample(dim(SR)[1], size = 27879)
+
+Treino_SR <- SR[indices, ]
+Teste_SR <- SR[-indices, ]
+```
+
+### Estimando Modelo
+
+```{r}
+ModLog <- glm(Obito ~ idade + sexo + factor(raca) + faltar + olfpal + febre0 + tosse0 + garganta0 + diarreia0 + vomito0 + fadiga0 + dor_abd0 + vacina0,
+              data=Treino_SR, family = binomial(link = 'logit'))
+
+summary(ModLog)
+```
+
+### Teste Hosmer e Lemeshow
+
+```{r}
+hoslem.test(Treino_SR$Obito, fitted(ModLog), g=10)
+```
+
+### Probabilidade Previstas
+
+```{r}
+Treino_SR$previsto = predict(ModLog, Treino_SR, type='response')
+Teste_SR$previsto = predict(ModLog, Teste_SR, type='response')
+```
+
+### Curva ROC
+
+```{r}
+roc_treino <- roc(Treino_SR, Obito, previsto)
+roc_teste <- roc(Teste_SR, Obito, previsto)
+
+par(mfrow=c(1, 2))
+plot(roc_treino, main='amostra treino')
+plot(roc_teste, main='amostra validacao')
+```
+
+### AUROC GINI KS
+
+```{r}
+#amostra treino
+print('AMOSTRA DE TREINO')
+cat('AUC: ', roc_treino$auc) #roc
+cat('\n')
+cat('Gini: ', 2*roc_treino$auc - 1) #Gini
+
+cat('\n')
+
+print('AMOSTRA DE VALIDACAO')
+cat('AUC: ', roc_teste$auc) #roc
+cat('\n')
+cat('Gini: ', 2*roc_teste$auc - 1) #Gini
+```
+
+```{r}
+#Amostra de Treino
+ks.test(Treino_SR$previsto[Treino_SR$Obito == 1],
+        Treino_SR$previsto[Treino_SR$Obito == 0]
+        )
+```
+
+```{r}
+#Amostra de Validacao
+ks.test(Teste_SR$previsto[Teste_SR$Obito == 1],
+        Teste_SR$previsto[Teste_SR$Obito == 0]
+        )
+```
+
+# Regressao Logistica com Lasso
+
+```{r}
+SR <- SR %>%
+mutate(raca = as.character(unclass(raca)), # Converte para character após unclass
+       raca = case_when(
+         raca == "1" ~ "branco",
+         raca == "2" ~ "preto",
+         raca == "3" ~ "amarelo",
+         raca == "4" ~ "pardo",
+         raca == "5" ~ "indigena",
+         TRUE ~ raca
+       ))
+
+#set.seed(336699)
+#indices <- sample(dim(SR)[1], size = 27879)
+
+df_treino = SR[indices, ] %>% 
+  select(Obito, idade, sexo, raca, faltar, olfpal, febre0, tosse0, garganta0, diarreia0, vomito0, fadiga0, dor_abd0, vacina0)
+
+X_treino <- model.matrix(~ ., data = df_treino[, -1])
+y_treino <- df_treino$Obito %>% as.vector()
+```
+
+### Escolhendo Lambda
+
+```{r}
+library(glmnet)
+
+# Escolher o melhor lambda usando validação cruzada
+cv_fit <- cv.glmnet(X_treino, y_treino, family = "binomial", alpha = 1)
+melhor_lambda <- cv_fit$lambda.min
+
+melhor_lambda
+plot(cv_fit)
+```
+
+### Estimando Modelo
+
+```{r}
+# Ajustar o modelo de regressão logística com Lasso
+# alpha = 1 para Lasso (alpha = 0 para Ridge)
+# family = "binomial" para regressão logística
+ModLog_Lasso <- glmnet(X_treino, y_treino, family = "binomial", alpha = 1)
+
+# Coeficientes do modelo com o melhor lambda
+coef_lasso <- coef(ModLog_Lasso, s = melhor_lambda)
+print(coef_lasso)
+
+# Visualizar os coeficientes para diferentes valores de lambda
+plot(ModLog_Lasso, xvar = "lambda")
+```
+
+### Curva ROC
+
+```{r}
+# Fazer previsões (probabilidades)
+df_treino$probabilidade <- predict(ModLog_Lasso,
+                                   newx = X_treino,
+                                   s = melhor_lambda,
+                                   type = "response")
+
+# Previsões de classe (0 ou 1)
+df_treino$previsto <- ifelse(df_treino$probabilidade > 0.5, 1, 0)
+
+# Avaliar o modelo (exemplo com AUC)
+roc_obj <- roc(response = y_treino,
+               predictor = df_treino$probabilidade)
+
+auc(roc_obj)
+```
+
+```{r}
+plot(roc_obj, main='amostra treino')
+```
